@@ -20,9 +20,9 @@
    están hechas para usarse en el navegador. La seguridad la dan el inicio
    de sesión y las reglas RLS de la base de datos (supabase_setup.sql).
    NUNCA pongas aquí la clave secreta (sb_secret_... o "service_role"). */
-const SUPABASE_URL="https://pwqiamalfnxayzdafujk.supabase.co";
-const SUPABASE_ANON_KEY="sb_publishable_w6hgxO6LkFiNZ7tndLHfzw_ZPvrTROY";
-const APP_VERSION="5.0.0";
+const SUPABASE_URL="__SUPABASE_URL__";
+const SUPABASE_ANON_KEY="__SUPABASE_ANON_KEY__";
+const APP_VERSION="6.0.0";
 
 /* ---------- 2. Utilidades generales ---------- */
 const MESES_UI=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"];
@@ -436,6 +436,7 @@ function detectCompany(wb,fname){
       if(tc.includes(e.ruc))add(e,3*w);
       const k=key(e),kc=k.replace(/ /g,""),tcc=tc.replace(/ /g,"");
       if(k.length>=4&&(tc.includes(k)||tcc.includes(kc)))add(e,2*w+k.length/100);
+      else{const k2=k.replace(/^CONSORCIO\s+/,"");if(k2!==k&&k2.length>=5&&new RegExp("(^|[^A-Z0-9])"+k2.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"([^A-Z0-9]|$)").test(tc))add(e,2*w+k2.length/100)}
       const ah=aliasHit(e,tc)||aliasHit(e,tc.replace(/ /g,""));if(ah)add(e,ah*w);
     }
     const mr=tc.match(/RUC\W{0,4}(2\d{10})\b/);if(mr&&rucOk(mr[1])&&!EMPRESAS.some(e=>e.ruc===mr[1]))nuevo=nuevo||mr[1];
@@ -468,10 +469,22 @@ function loadWorkbook(buf,fname){
   const usable=wb.SheetNames.filter(n=>{const m=meta.find(x=>x.name===n);if(m&&m.Hidden)return false;
     const base=n.replace(/\s*\(\d+\)\s*$/,"").trim();return !(base!==n.trim()&&wb.SheetNames.some(x=>x.trim()===base))});
   const fallbackM=per?per.m:(S.month||new Date().getMonth()+1);
+  /* Construcción civil: hojas semanales o mensuales del régimen; se declaran junto con la planilla general */
+  const ccHojas=[];for(const n of usable){if(isRHName(norm(n))||noPlanilla(n))continue;const p=parseConstruccion(wb.Sheets[n]);if(p)ccHojas.push({name:n.trim(),src:n,...p})}
+  const esCCHoja=n=>ccHojas.some(h=>h.src===n);
+  const tarWb=parseTareo(wb);
+  /* Un archivo que solo trae el tareo (asistencias) se usa con la planilla de construcción civil cargada, o se guarda para la siguiente */
+  if(!ccHojas.length&&tarWb.length&&!usable.some(n=>!noPlanilla(n)&&!isRHName(norm(n))&&parseSheet(wb.Sheets[n]))){
+    const meses=tarWb.map(x=>MESES[x.mes-1].toLowerCase()).join(", ");
+    if(S.cc){S.cc.tareo=tarWb;S.cc.tareoArchivo=fname;render();toast(`Tareo de ${meses} agregado a la planilla de construcción civil`)}
+    else{S.tareoPend={tareo:tarWb,archivo:fname};toast(`Tareo de ${meses} guardado: ahora carga la liquidación con la planilla de construcción civil`)}
+    return;
+  }
+  S.cc=ccHojas.length?{hojas:ccHojas,manual:null,tareo:tarWb.length?tarWb:(S.tareoPend?S.tareoPend.tareo:null),tareoArchivo:tarWb.length?null:(S.tareoPend?S.tareoPend.archivo:null),cols:[]}:null;
   for(const n of usable){
     const nn=norm(n);
     if(isRHName(nn)){rhCands.push(n);continue}
-    if(noPlanilla(n))continue;
+    if(noPlanilla(n)||esCCHoja(n))continue;
     let mi=MESES.findIndex(x=>nn.includes(x));if(mi<0&&nn.includes("SEPTIEMBRE"))mi=8;
     let mm=mi>=0?mi+1:0;const liq=!mm;
     if(!mm&&nn.includes("PLANILLA"))mm=fallbackM;
@@ -479,7 +492,8 @@ function loadWorkbook(buf,fname){
     const p=parseSheet(wb.Sheets[n]);if(!p)continue;
     sheets.push({name:n.trim(),src:n,month:mm,liq,...p});
   }
-  if(!sheets.length){for(const n of usable){if(isRHName(norm(n))||noPlanilla(n))continue;const p=parseSheet(wb.Sheets[n]);if(p&&p.rows.length){sheets.push({name:n.trim(),src:n,month:fallbackM,liq:true,...p});break}}}
+  if(!sheets.length){for(const n of usable){if(isRHName(norm(n))||noPlanilla(n)||esCCHoja(n))continue;const p=parseSheet(wb.Sheets[n]);if(p&&p.rows.length){sheets.push({name:n.trim(),src:n,month:fallbackM,liq:true,...p});break}}}
+  if(!sheets.length&&S.cc)sheets.push({name:"Construcción civil",src:null,month:fallbackM,liq:true,ccSolo:true,rows:[],extras:[],missing:[]});
   /* Sin hoja de planilla: si hay recibos por honorarios se generan igual el .ps4 y el .4ta */
   if(!sheets.length){
     if(!rhCands.length)for(const n of usable){if(noPlanilla(n))continue;if(/HONORARIO/.test(norm(topText(wb.Sheets[n]))))rhCands.push(n)}
@@ -504,6 +518,157 @@ function loadWorkbook(buf,fname){
   S.month=S.month&&sheets.some(s=>s.month===S.month)?S.month:(want||sheets[0].month);
   render();
 }
+
+/* ---------- Construcción civil ----------
+   Planillas del régimen de construcción civil (jornal básico, dominical, BUC, CONAFOVICER…), por semana o por mes.
+   Las semanas del mes se suman por trabajador y se declaran junto con la planilla del régimen general, si la hay.
+   El tareo (hoja de asistencias) da los días trabajados y, si trae horas de ingreso y salida, las horas. */
+const CC_RULES=[
+ [/^JORNAL (COMPUTABLE|BASICO)|^JORNALES?\b/,"0121","Remuneración o jornal básico"],
+ [/^DOMINICAL|DESCANSO SEMANAL/,"0115","Remuneración día de descanso y feriados"],
+ [/FERIADO.*LABORA|TRABAJO EN (DIA )?FERIADO/,"0107","Trabajo en día feriado o día de descanso"],
+ [/^FERIADOS?\b/,"0115","Remuneración día de descanso y feriados"],
+ [/^BUC\b|BONIFICACION UNIFICADA/,"0311","Bonificación unificada de construcción"],
+ [/^VACACIONES/,"0114","Vacaciones truncas (10 % del jornal)"],
+ [/HORAS? EXTRAS?.*100/,"0106","Sobretiempo (horas al 100 %)"],
+ [/HORAS? EXTRAS?/,"0105","Sobretiempo (horas al 60 %)"],
+ [/^BONIFICACION.*GRATIF|^BONIFICACION (9|6[.,]75)/,"0313","Bonificación extraordinaria proporcional – Ley 29351 y 30334"],
+ [/^GRATIFICACION/,"0407","Gratificación proporcional – Ley 29351 y 30334"],
+ [/ESCOLARIDAD/,"0211","Asignación por escolaridad (30 jornales al año)"],
+ [/^BONIFICACION EXTRAORDINARIA$/,"0922","Sumas o bienes que no son de libre disposición"],
+ [/MOVILIDAD/,"0909","Movilidad supeditada a asistencia"],
+ [/\bCTS\b|TIEMPO DE SERVICIOS/,"0904","Compensación por tiempo de servicios"],
+ [/CONAFOVICER/,"0602","CONAFOVICER"]
+];
+/* Redondeo a 2 decimales como Excel (227.715 → 227.72): evita el error de coma flotante al sumar semanas */
+const rx=v=>Math.round(+((v||0)*100).toFixed(6))/100;
+const esSemana=n=>/SEMANA|\bSEM\.?\s*\d|QUINCENA/.test(norm(n));
+const mesEnNombre=n=>{const nn=norm(n).replace(/SEPTIEMBRE/g,"SETIEMBRE");const i=MESES.findIndex(x=>nn.includes(x));return i+1};
+function parseConstruccion(ws){
+  if(!ws||!ws["!ref"])return null;
+  const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+  let hi=-1;
+  for(let i=0;i<Math.min(aoa.length,40);i++){const r=(aoa[i]||[]).map(norm);if(r.some(isDocHdr)&&r.some(isNameHdr)){hi=i;break}}
+  if(hi<0)return null;
+  const hdrRaw=(aoa[hi]||[]).map(x=>String(x??"").replace(/\s+/g," ").trim());const hdr=hdrRaw.map(norm);
+  const tt=norm(topText(ws,hi+1));
+  const tieneJornal=hdr.some(h=>/^JORNAL/.test(h));
+  const esCC=(tieneJornal&&hdr.some(h=>/^BUC\b|BONIFICACION UNIFICADA|^DOMINICAL|CONAFOVICER/.test(h)))||(/CONSTRUCCION CIVIL/.test(tt)&&(tieneJornal||hdr.some(h=>/CONAFOVICER|^BUC\b/.test(h))));
+  if(!esCC)return null;
+  /* grupos de columnas (fila encima de los títulos, con celdas combinadas): DATOS LABORALES, INGRESOS, DESCUENTOS… */
+  const rg=XLSX.utils.decode_range(ws["!ref"]);const grupo=[];
+  if(hi>0){const g=aoa[hi-1]||[];
+    for(let j=0;j<hdr.length;j++)grupo[j]=norm(g[j]);
+    for(const m of ws["!merges"]||[])if(m.s.r===rg.s.r+hi-1){const t=norm(g[m.s.c-rg.s.c]);for(let c=m.s.c;c<=m.e.c;c++)grupo[c-rg.s.c]=t}}
+  let gi=grupo.findIndex(t=>/^INGRESOS?\b/.test(t||""));
+  if(gi<0)gi=hdr.findIndex(h=>/^JORNAL COMPUTABLE|^JORNAL SEMANAL|^JORNALES\b/.test(h));
+  if(gi<0){const js=hdr.map((h,j)=>/^JORNAL/.test(h)?j:-1).filter(j=>j>=0);gi=js.length>1?js[1]:js[0]??-1}
+  if(gi<0)return null;
+  let fin=hdr.length;for(let j=gi+1;j<hdr.length;j++)if(/OTROS DATOS|ADICIONAL/.test(grupo[j]||"")||/FECHA DE NACIMIENTO|^DIRECCION/.test(hdr[j])){fin=j;break}
+  /* columnas de días y horas (antes de los ingresos) */
+  const antes=(re,no)=>hdr.map((h,j)=>j<gi&&re.test(h)&&!(no&&no.test(h))?j:-1).filter(j=>j>=0);
+  const cDias=antes(/^DIAS (LABORADOS|TRABAJADOS|LAB)/,/DOMINGO|FERIADO/),cDom=antes(/DIAS.*DOMINGO/),cFer=antes(/^DIAS (DE )?FERIADOS?$/),cFerLab=antes(/FERIADO.*LABORA/),
+    cDM=antes(/DESCANSO MEDICO|^DIAS (DE )?D\.? ?M\.?$/),cHE=antes(/^HORAS EXTRAS?/),cJornal=antes(/^JORNAL/);
+  const cols=[],colIdx={};
+  for(let j=gi;j<fin;j++){let h=hdr[j];if(!h||/^(SUB ?)?TOTAL|^NETO|REMUNERACION TOTAL|^TOTAL A PAGAR/.test(h))continue;if(colIdx[h]!=null){let k=2;while(colIdx[`${h} (${k})`]!=null)k++;h=`${h} (${k})`}colIdx[h]=j;cols.push(h)}
+  const col={};for(const k of ["cod","nombre","dni","alta","baja","pension","estatus","tipoDoc"])col[k]=findCol(hdr,FIELDS[k]);
+  col.modalidad=findCol(hdr,["MODO DE CONTRATACION","MODALIDAD DE PAGO","MODALIDAD","TIPO DE PAGO"]);
+  let fecha=null;for(let i=0;i<hi&&!fecha;i++)for(const v of aoa[i]||[])if(v instanceof Date){fecha=parseDate(v);break}
+  const suma=(r,cs)=>cs.reduce((s,j)=>s+num(r[j]),0);
+  const rows=[];
+  for(let i=hi+1;i<aoa.length;i++){
+    const r=aoa[i]||[];const name=r[col.nombre],dni=r[col.dni];
+    if(!name||/^TOTAL/.test(norm(name))||!/[A-Z]{2,}.*\s.*[A-Z]{2,}/i.test(String(name)))continue;
+    if(dni==null||(typeof dni==="number"&&!Number.isInteger(dni)))continue;
+    {const dg=String(dni).replace(/\D/g,"");if(dg.length<6||dg.length>15)continue}
+    const g=k=>col[k]>=0?r[col[k]]:null;
+    const amounts={};for(const h of cols)amounts[h]=num(r[colIdx[h]]);
+    const cc={dias:suma(r,cDias),dom:suma(r,cDom),fer:suma(r,cFer),ferLab:suma(r,cFerLab),dm:suma(r,cDM),he:suma(r,cHE),jornal:cJornal.length?num(r[cJornal[0]]):0};
+    rows.push({row:i+1,cod:g("cod"),tipoDoc:norm(g("tipoDoc")),nombre:String(name).replace(/\s+/g," ").trim(),dniRaw:dni,modalidad:col.modalidad>=0&&g("modalidad")?String(g("modalidad")).trim():"Planilla",
+      susp:"",pension:String(g("pension")??"").trim(),estatus:String(g("estatus")??"").trim(),sueldo:cc.jornal*30,
+      alta:parseDate(g("alta")),baja:parseDate(g("baja")),lab:cc.dias+cc.dom+cc.ferLab,faltas:0,lic:cc.dm,vac:0,vini:null,vfin:null,otros:0,hasOtros:false,hasLab:true,rhMonto:0,rh4ta:0,
+      amounts,notes:[],cm:{},cc});
+  }
+  if(!rows.length)return null;
+  return {cc:true,cols,rows,fecha,extras:[],missing:[]};
+}
+/* Semanas que se suman por defecto para el mes: las que no nombran otro mes y cuya fecha de cabecera es del periodo */
+function ccSeleccionPorDefecto(y,m){
+  const H=S.cc.hojas;const conSemana=H.some(h=>esSemana(h.name));
+  let sel=H.filter(h=>{const mn=mesEnNombre(h.name);if(mn&&mn!==m)return false;if(h.fecha&&(h.fecha.m!==m||h.fecha.y!==y))return false;return !conSemana||esSemana(h.name)||mn===m});
+  if(!sel.length)sel=H.filter(h=>{const mn=mesEnNombre(h.name);return !mn||mn===m});
+  return sel.map(h=>h.name);
+}
+const ccSeleccion=()=>S.cc?(S.cc.manual||ccSeleccionPorDefecto(S.year,S.month)):[];
+const claveDoc=v=>{const s=String(v??"").replace(/[^0-9A-Z]/gi,"").toUpperCase();return /^\d{1,8}$/.test(s)?s.padStart(8,"0"):s};
+/* Suma por trabajador las semanas elegidas */
+function ccFilas(){
+  if(!S.cc)return [];
+  const sel=new Set(ccSeleccion());const map=new Map();const cols=[];
+  for(const h of S.cc.hojas){if(!sel.has(h.name))continue;
+    for(const c of h.cols)if(!cols.includes(c))cols.push(c);
+    for(const r of h.rows){const k=claveDoc(r.dniRaw);const a=map.get(k);
+      if(!a){map.set(k,{...structuredClone(r),dniRaw:r.dniRaw,cc:{...r.cc,hojas:[h.name]}});continue}
+      for(const c in r.amounts)a.amounts[c]=(a.amounts[c]||0)+r.amounts[c];
+      for(const c of ["dias","dom","fer","ferLab","dm","he"])a.cc[c]+=r.cc[c];
+      a.cc.hojas.push(h.name);a.lab+=r.lab;a.lic+=r.lic;
+      if(r.alta&&(!a.alta||cmp(r.alta,a.alta)<0))a.alta=r.alta;
+      if(r.baja&&(!a.baja||cmp(r.baja,a.baja)>0))a.baja=r.baja;
+      if(r.pension)a.pension=r.pension;if(r.cc.jornal){a.cc.jornal=r.cc.jornal;a.sueldo=r.sueldo}}}
+  S.cc.cols=cols;
+  return [...map.values()];
+}
+/* ---------- Tareo (asistencias): hoja «RESUMEN <MES>» con una X por día trabajado y, si hay, horas de ingreso y salida ---------- */
+/* Hora de una celda: se usa el texto que muestra Excel («07:30», «5:00 PM») para no depender de la zona horaria */
+function horaCelda(ws,rg,i,j){
+  const c=ws[XLSX.utils.encode_cell({r:rg.s.r+i,c:rg.s.c+j})];if(!c||c.v==null||c.v==="")return null;
+  if(typeof c.v==="number"&&c.v>=0&&c.v<1)return Math.round(c.v*24*60)/60;
+  const m=String(c.w??c.v).match(/^\s*(\d{1,2})[:.h](\d{2})(?::\d{2})?\s*([AP])?/i);if(!m)return null;
+  let h=+m[1]+(+m[2])/60;if(m[3]&&/P/i.test(m[3])&&h<12)h+=12;if(m[3]&&/A/i.test(m[3])&&h>=12)h-=12;return h;
+}
+function parseTareo(wb){
+  const out=[];
+  for(const n of wb.SheetNames){
+    const ws=wb.Sheets[n];if(!ws||!ws["!ref"])continue;
+    const tt=norm(topText(ws,8));if(!/TAREO|ASISTENCIA/.test(tt+" "+norm(n)))continue;
+    const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});const rg=XLSX.utils.decode_range(ws["!ref"]);
+    let hi=-1;for(let i=0;i<Math.min(aoa.length,25);i++)if((aoa[i]||[]).some(v=>/^NOMBRES|APELLIDOS Y NOMBRES|TRABAJADOR/.test(norm(v)))){hi=i;break}
+    if(hi<0)continue;
+    const h0=(aoa[hi]||[]).map(norm);const cNom=h0.findIndex(v=>/^NOMBRES|APELLIDOS Y NOMBRES|TRABAJADOR/.test(v));
+    let mes=mesEnNombre(n);if(!mes)for(const v of h0){const k=mesEnNombre(v||"");if(k){mes=k;break}}
+    if(!mes)continue;
+    const d=aoa[hi+1]||[];const cDia={};let esperado=1;
+    for(let j=cNom+1;j<d.length;j++){const v=d[j];if(typeof v==="number"&&v===esperado){cDia[v]=j;esperado++}else if(esperado>1&&esperado<=31&&v!=null&&!(typeof v==="number"))break}
+    if(Object.keys(cDia).length<28)continue;
+    /* pares de horas: fila de fechas con «H. Ingreso / H. salida» debajo */
+    const t=aoa[hi+2]||[];const pares=[];let anio=null;
+    for(let j=0;j<d.length;j++)if(d[j] instanceof Date&&/INGRESO|ENTRADA/.test(norm(t[j]))){const f=parseDate(d[j]);if(f&&f.m===mes){pares.push({dia:f.d,ci:j,cf:j+1});anio=anio||f.y}}
+    if(!anio){const m=(tt+" "+norm(n)).match(/\b(20\d{2})\b/);anio=m?+m[1]:null}
+    const trab=[];
+    for(let i=hi+1;i<aoa.length;i++){
+      const r=aoa[i]||[];const nom=String(r[cNom]??"").replace(/\s+/g," ").trim();
+      if(nom.length<5||!/[A-Z]{3}/i.test(nom)||/^(CARGOS?|PEON|OFICIAL|OPERARIO|LEYENDA|TOTAL)/.test(norm(nom)))continue;
+      const dias=new Set();for(const k in cDia)if(/^X$/.test(norm(r[cDia[k]])))dias.add(+k);
+      const horas=new Map();
+      for(const p of pares){let a=horaCelda(ws,rg,i,p.ci),b=horaCelda(ws,rg,i,p.cf);if(a==null||b==null)continue;if(b<=a)b+=12;if(b<=a)b+=12;
+        const bruto=b-a;horas.set(p.dia,Math.round((bruto-(bruto>=6?1:0))*100)/100);dias.add(p.dia)}
+      if(!dias.size&&!horas.size)continue;
+      trab.push({nombre:nom,dias,horas});
+    }
+    if(trab.length)out.push({hoja:n.trim(),mes,anio,trab});
+  }
+  return out;
+}
+const tokNombre=s=>plain(s).split(/\s+/).filter(w=>w.length>1);
+function tareoDe(r){
+  if(!S.cc||!S.cc.tareo)return null;
+  const T=S.cc.tareo.find(t=>t.mes===S.month&&(!t.anio||t.anio===S.year));if(!T)return null;
+  const a=new Set(tokNombre(r.nombre));let best=null,empate=false;
+  for(const w of T.trab){const b=tokNombre(w.nombre);const c=b.filter(x=>a.has(x)).length;if(c<2||c<Math.min(a.size,b.length)*0.6)continue;
+    if(!best||c>best.c){best={w,c};empate=false}else if(c===best.c)empate=true}
+  return best&&!empate?best.w:null;
+}
+function tareoActual(){return S.cc&&S.cc.tareo?S.cc.tareo.find(t=>t.mes===S.month&&(!t.anio||t.anio===S.year))||null:null}
 
 /* ---------- computation ---------- */
 const AUTO_RULES=[
@@ -548,19 +713,28 @@ const AUTO_RULES=[
  [/^ESSALUD\b|ESSALUD.*(9|REGULAR|APORTE)/,"0804","EsSalud seguro regular"],
  [/SENATI/,"0807","SENATI"],
  [/CONAFOVICER/,"0602","CONAFOVICER"],
+ [/^BUC\b|BONIFICACION UNIFICADA DE CONSTRUCCION/,"0311","Bonificación unificada de construcción"],
+ [/^DOMINICAL/,"0115","Remuneración día de descanso y feriados"],
  [/^COMISION(ES)?\b/,"0103","Comisiones o destajo"]
 ];
-function codeInfo(h){
+function codeInfo(h,cc){
   const cm=colMap().find(x=>x.h===h);if(cm)return {code:cm.code,src:cm.propio?"propio":"empresa",label:cm.label};
   const m=h.match(/(?:CDG|COD(?:IGO)?\.?)\s*(\d{3,4})\b/)||h.match(/\(\s*(\d{4})\s*\)/)||h.match(/^(0\d{3})\b|\s(0\d{3})$/);
   if(m){const c=(m[1]||m[2]).padStart(4,"0");return {code:c,src:"titulo"}}
+  /* Construcción civil: códigos propios del régimen (BUC, dominical, CONAFOVICER…); se pueden cambiar en «Conceptos y jornada» */
+  if(cc){const ov=S.settings.conceptsCC||{};
+    if(h in ov){const code=ov[h]||"";const p=code&&(INIT.codigos||[]).find(c=>c.ruc===S.ruc&&c.activo&&c.tipo==="concepto"&&c.codigo===code);return p?{code,src:"config",label:p.descripcion+" (código propio)"}:{code,src:"config"}}
+    for(const [re,c,l] of CC_RULES)if(re.test(h))return {code:c,src:"auto",label:l};
+    for(const [re,c,l] of AUTO_RULES)if(re.test(h))return {code:c,src:"auto",label:l};
+    const t=porCatalogo(h);if(t)return {code:t.code,src:"tabla22",label:t.label};
+    return {code:"",src:""}}
   if(h in S.settings.concepts){const code=S.settings.concepts[h]||"";const p=code&&(INIT.codigos||[]).find(c=>c.ruc===S.ruc&&c.activo&&c.tipo==="concepto"&&c.codigo===code);return p?{code,src:"config",label:p.descripcion+" (código propio)"}:{code,src:"config"}}
   for(const [re,c,l] of AUTO_RULES)if(re.test(h))return {code:c,src:"auto",label:l};
   const t=porCatalogo(h);if(t)return {code:t.code,src:"tabla22",label:t.label};
   return {code:"",src:""};
 }
-const codeFor=h=>codeInfo(h).code;
-function allConcepts(){const cm=colMap(),cmh=new Set(cm.map(x=>x.h));return DEFAULT_CONCEPTS.filter(c=>!cmh.has(c.h)).concat(cm.map(x=>({h:x.h,code:x.code,label:x.label,regla:!x.propio,propio:!!x.propio})),(S.extraCols||[]).filter(h=>!cmh.has(h)).map(h=>({h,code:"",label:"Columna adicional del Excel: revisa el código",extra:true})))}
+const codeFor=(h,cc)=>codeInfo(h,cc).code;
+function allConcepts(cc){if(cc)return ((S.cc&&S.cc.cols)||[]).map(h=>({h,code:"",label:"",cc:true}));const cm=colMap(),cmh=new Set(cm.map(x=>x.h));return DEFAULT_CONCEPTS.filter(c=>!cmh.has(c.h)).concat(cm.map(x=>({h:x.h,code:x.code,label:x.label,regla:!x.propio,propio:!!x.propio})),(S.extraCols||[]).filter(h=>!cmh.has(h)).map(h=>({h,code:"",label:"Columna adicional del Excel: revisa el código",extra:true})))}
 /* Catálogo base (para todas las empresas) y descripción de un código según la empresa actual */
 const SNL_BASE=[["05","Licencia sin goce de haber"],["07","Falta no justificada"],["20","Enfermedad o accidente (primeros 20 días)"],["21","Incapacidad temporal (subsidio)"],["23","Descanso vacacional"],["24","Cargo cívico / SMO"],["27","Licencia con goce de haber"]];
 let _catalogo=null;
@@ -578,7 +752,7 @@ function compute(){
   const y=S.year,m=S.month,D=daysIn(y,m),J=S.settings.jornada,fer=new Set(feriadosDe(m));
   const first={y,m,d:1},last={y,m,d:D};
   const workers=[],excluded=[],rhSrc=[];
-  for(const r of sh.rows){
+  for(const r of sh.rows.concat(ccFilas())){
     const mod=norm(r.modalidad);
     if(mod==="PLANILLA"||/PLANILLA|BOLETA|5TA/.test(mod))workers.push(r);
     else if(mod.startsWith("RECIBO POR HONORARIOS"))rhSrc.push(r);
@@ -596,6 +770,7 @@ function compute(){
     if(r.alta&&r.alta.y===y&&r.alta.m===m)start=r.alta.d;
     if(r.baja&&cmp(r.baja,first)<0)alerts.push({t:"bad",m:`Baja ${dstr(r.baja)} anterior al periodo`});
     if(r.baja&&r.baja.y===y&&r.baja.m===m)end=r.baja.d;
+    if(r.cc){out.push(computeCC(r,di,tipo,o,alerts,start,end,{y,m,D,J,fer,first,last}));continue}
     const fuera=(start-1)+(D-end);
     const vac=o.vac??r.vac, faltas=o.faltas??r.faltas, lic=o.lic??r.lic;
     const rOtros=r.hasOtros===false?fuera:r.otros;
@@ -667,6 +842,49 @@ function compute(){
     out.push({r,tipo,doc:di.num,start,end,fuera,vac,faltas,lic,otrosSE,hOrdMin,heMin,lines,ing,quinta,snl,alerts,diasPer,diasTrab});
   }
   return {sheet:sh,D,workers:out,excluded,rhSrc};
+}
+
+/* Trabajador de construcción civil: días y horas del tareo o de la planilla semanal, sobretiempo de las columnas de horas extras */
+function computeCC(r,di,tipo,o,alerts,start,end,P){
+  const {y,m,D,J,fer,first,last}=P;
+  const t=tareoDe(r),T=tareoActual();
+  const diasPl=r.cc.dias+r.cc.dom+r.cc.ferLab;
+  const enPeriodo=d=>d>=start&&d<=end;
+  const diasT=t?[...t.dias].filter(enPeriodo).length:null;
+  const dias=diasPl||diasT||0;
+  const lic=o.lic??r.cc.dm;
+  alerts.push({t:"info",m:`Construcción civil · ${r.cc.hojas.length} hoja(s): ${r.cc.hojas.join(", ")}`});
+  if(t&&diasPl&&diasT!==diasPl)alerts.push({t:"warn",m:`El tareo marca ${diasT} día(s) y la planilla paga ${diasPl}: revisa las asistencias`});
+  if(T&&!t)alerts.push({t:"warn",m:"No lo encontré en el tareo: las horas se calculan con los días de la planilla"});
+  if(!dias&&!lic)alerts.push({t:"warn",m:"Sin días trabajados en las semanas elegidas"});
+  /* horas ordinarias: por cada día del tareo, la jornada de ese día (o las horas de ingreso y salida, sin pasar la jornada);
+     sin tareo, días de la planilla × horas promedio por día */
+  let mins=0,extraT=0,fuente="";
+  if(t&&diasT){
+    for(const d of [...t.dias].filter(enPeriodo)){const wd=new Date(y,m-1,d).getDay();const jd=fer.has(d)?0:(wd===0?J.dom:wd===6?J.sab:J.lv);const h=t.horas.get(d);
+      if(h!=null){mins+=Math.round(Math.min(h,jd)*60);extraT+=Math.max(0,h-jd)}else mins+=Math.round(jd*60)}
+    fuente=`tareo «${T.hoja}»`;
+  }else{mins=Math.round(dias*J.prom*60);fuente=`${dias} día(s) × ${J.prom} h`}
+  const hOrdMin=o.hOrd!=null?Math.round(o.hOrd*60):mins;
+  const heH=r.cc.he||r2(extraT);
+  const heMin=o.he!=null?Math.round(o.he*60):Math.round(heH*60);
+  if(!r.cc.he&&extraT>0&&o.he==null)alerts.push({t:"warn",m:`Horas extras según el tareo (${r2(extraT)} h): la planilla no trae horas extras`});
+  /* Se suman por código antes de redondear (CTS 12 % + CTS 3 % → 0904), como en la boleta R08 */
+  const porCodigo=new Map();let ing=0,quinta=0;
+  for(const c of allConcepts(true)){
+    const v=r.amounts[c.h]||0;if(!rx(v))continue;
+    const code=codeFor(c.h,true);
+    if(!code){alerts.push({t:"bad",m:`${c.h} S/ ${fmt(v)} sin código PLAME: no se exporta`});continue}
+    const x=porCodigo.get(code)||{code,hs:[],v:0};x.hs.push(c.h);x.v+=v;porCodigo.set(code,x);
+  }
+  const lines=[...porCodigo.values()].map(x=>({code:x.code,h:x.hs.join(" + "),a:rx(x.v)})).filter(l=>l.a);
+  for(const l of lines){if(l.code==="0605")quinta+=l.a;else if(!/^0[678]/.test(l.code))ing+=l.a}
+  if(!lines.some(l=>!/^0[678]/.test(l.code)))alerts.push({t:"warn",m:"Sin ingresos en el mes"});
+  if(o.hOrd!=null||o.he!=null||o.lic!=null||o.licCode)alerts.push({t:"info",m:"Editado a mano"});
+  const snl=[];if(lic>0)snl.push([o.licCode||S.settings.snl.lic,lic]);
+  const fueraPeriodo=(r.alta&&cmp(r.alta,last)>0)||(r.baja&&cmp(r.baja,first)<0);
+  const diasPer=fueraPeriodo?0:Math.max(0,end-start+1);
+  return {r,tipo,doc:di.num,start,end,fuera:0,vac:0,faltas:0,lic,otrosSE:0,hOrdMin,heMin,lines,ing,quinta,snl,alerts,diasPer,diasTrab:dias,cc:true,fuenteHoras:fuente,diasTareo:diasT};
 }
 
 /* ---------- recibos por honorarios ---------- */
@@ -785,6 +1003,13 @@ function render(){
         +(S.per?`<span class="note" style="align-self:flex-end">Leído del archivo: ${MESES[S.per.m-1].toLowerCase()} ${S.per.y}${S.per.otros.length?` · también aparece ${S.per.otros.map(k=>MESES[+k.slice(5)-1].toLowerCase()+" "+k.slice(0,4)).join(", ")}`:""}</span>`:`<span class="chip warn" style="align-self:flex-end">No encontré el mes en el archivo: elígelo</span>`)
         +(S.sheets.length>1?`<div class="row" style="width:100%">${S.sheets.map(x=>`<button type="button" data-sheet="${esc(x.name)}" aria-pressed="${x.name===S.sheetName}">${esc(x.name)}</button>`).join("")}</div>`:"");
     }else mb.innerHTML=S.sheets.map(s=>`<button type="button" data-m="${s.month}" aria-pressed="${s.month===S.month}">${esc(MESES[s.month-1].slice(0,3))}</button>`).join("");
+    if(S.cc){const sel=ccSeleccion(),T=tareoActual();
+      mb.insertAdjacentHTML("beforeend",`<div class="cc-bar" id="ccBar">
+        <div><b>Construcción civil</b> · hojas que se suman en ${MESES[S.month-1].toLowerCase()} ${S.year}${S.cc.manual?' <button type="button" class="linkbtn" data-ccauto="1">volver a la selección automática</button>':""}</div>
+        <div class="row" style="gap:4px 14px">${S.cc.hojas.map(h=>`<label class="check"><input type="checkbox" data-ccsheet="${esc(h.name)}"${sel.includes(h.name)?" checked":""}><span>${esc(h.name)} <span class="note">(${h.rows.length})</span></span></label>`).join("")}</div>
+        <div class="row" style="gap:8px">${T?`<span class="chip ok">Tareo: ${esc(S.cc.tareoArchivo?S.cc.tareoArchivo+" · ":"")}${esc(T.hoja)} · ${T.trab.length} trabajador(es)</span>`:`<span class="chip ${S.cc.tareo&&S.cc.tareo.length?"warn":"muted"}">${S.cc.tareo&&S.cc.tareo.length?`El tareo cargado no es de ${MESES[S.month-1].toLowerCase()}`:"Sin tareo: horas = días de la planilla × "+S.settings.jornada.prom+" h"}</span>`}
+          <label class="btn ghost sm" style="cursor:pointer">${T?"Cambiar tareo":"Cargar tareo (asistencias)"}<input type="file" id="fileTareo" accept=".xlsx,.xlsm,.xls" hidden></label></div>
+      </div>`)}
   }
   const C=S.sheets.length?compute():null;
   $("#emptyState").hidden=!!C;$("#workspace").hidden=!C;$("#stats").hidden=!C;
@@ -823,7 +1048,7 @@ function renderTrab(C){
       <td class="mono">${w.tipo}·${esc(w.doc)}</td>
       <td class="name" title="${esc(w.r.nombre)}">${w.r.notes.length?`<button class="linkbtn" data-toggle="${esc(w.doc)}" title="Ver comentarios del Excel">✎${w.r.notes.length}</button> `:""}${esc(w.r.nombre)}</td>
       <td class="mono" title="${esc(`Ingreso: ${dstr(w.r.alta)} · Cese: ${w.r.baja?dstr(w.r.baja):"sin fecha"}`)}">${w.r.alta&&w.r.alta.m===S.month&&w.r.alta.y===S.year?`<span class="chip info">ingreso ${pad2(w.r.alta.d)}/${pad2(w.r.alta.m)}</span>`:""}${w.r.baja&&w.r.baja.m===S.month&&w.r.baja.y===S.year?`<span class="chip warn">cese ${pad2(w.r.baja.d)}/${pad2(w.r.baja.m)}</span>`:""}${!(w.r.alta&&w.r.alta.m===S.month&&w.r.alta.y===S.year)&&!(w.r.baja&&w.r.baja.m===S.month&&w.r.baja.y===S.year)?(w.r.alta?`<span class="note">desde ${esc(dstr(w.r.alta))}</span>`:""):""}</td>
-      <td class="num">${w.r.lab}</td>
+      <td class="num"${w.cc?` title="${esc(`Planilla: ${w.r.cc.dias} día(s) + ${w.r.cc.dom} domingo(s) + ${w.r.cc.ferLab} feriado(s) trabajados${w.diasTareo!=null?` · tareo: ${w.diasTareo} día(s)`:""} · horas: ${w.fuenteHoras}`)}"`:""}>${w.r.lab}${w.cc&&w.diasTareo!=null&&w.diasTareo!==w.r.lab?` <span class="chip warn">tareo ${w.diasTareo}</span>`:""}</td>
       <td class="num" title="${esc(`Del ${pad2(w.start)}/${pad2(S.month)} al ${pad2(w.end)}/${pad2(S.month)}: ${w.diasPer} día(s) en planilla − ${w.vac} vac. − ${w.faltas} faltas − ${w.lic} D.M./lic. − ${w.otrosSE} otros`)}"><b>${w.diasTrab}</b></td>
       <td class="num"><input type="number" min="0" max="31" data-ov="vac" data-doc="${esc(w.doc)}" value="${w.vac}" aria-label="Vacaciones"></td>
       <td class="num"><input type="number" min="0" max="31" data-ov="faltas" data-doc="${esc(w.doc)}" value="${w.faltas}" aria-label="Faltas"></td>
@@ -840,7 +1065,9 @@ function renderTrab(C){
     return main+det;
   }).join("");
   const exc=C.excluded.length?`<p class="note">Fuera del PLAME (no son 4ta ni 5ta): ${C.excluded.map(r=>`${esc(r.nombre)} — ${esc(r.modalidad)} S/ ${fmt(r.rhMonto||r.sueldo)}`).join(" · ")}. Las regalías con retención de 2da categoría van en el PDT 617.</p>`:"";
-  v.innerHTML=`
+  const ccN=C.workers.filter(w=>w.cc).length;
+  const notaCC=ccN?`<div class="alertbox info"><b>Construcción civil: ${ccN} obrero(s)</b> de ${ccSeleccion().length} hoja(s) sumadas${C.workers.length>ccN?`, junto con ${C.workers.length-ccN} trabajador(es) del régimen general`:""}. Los días salen de la planilla (días laborados + domingos y feriados trabajados); las horas ordinarias, del tareo (jornada de cada día marcado: L–V ${S.settings.jornada.lv} h, sábado ${S.settings.jornada.sab} h) o, sin tareo, días × ${S.settings.jornada.prom} h; el sobretiempo, de las columnas de horas extras. Los códigos (jornal 0121, dominical 0115, BUC 0311, CONAFOVICER 0602…) se revisan en «Conceptos y jornada».</div>`:"";
+  v.innerHTML=notaCC+`
   <p class="note">Las horas ordinarias se calculan con la jornada L–V ${S.settings.jornada.lv} h y sábado ${S.settings.jornada.sab} h, dentro de las fechas de alta y baja, sin los días de vacaciones y feriados. Faltas, descanso médico y otros días se restan a ${S.settings.jornada.prom} h por día. «Días trab.» cuenta los días del mes entre la fecha de ingreso y la de cese (calendario real), menos vacaciones, faltas, licencias y otros días no laborados; pasa el mouse para ver el detalle. Cualquier celda se puede corregir; el cambio se guarda automáticamente en la base de datos.</p>
   <div class="scroll"><table>
     <thead><tr><th>Doc.</th><th>Trabajador</th><th>Ingreso / cese</th><th class="num" title="Días laborados según el Excel">Días lab. Excel</th><th class="num" title="Días trabajados según las fechas de ingreso y cese">Días trab.</th><th class="num">Vac. ${esc(S.settings.snl.vac)}</th><th class="num">Faltas ${esc(S.settings.snl.faltas)}</th><th class="num">D.M. ${esc(S.settings.snl.lic)}</th><th class="num">Otros ${esc(S.settings.snl.otros)}</th><th class="num">H. ord.</th><th class="num">H. extra</th><th class="num">Ingresos</th>${GRUPOS.map(([n])=>`<th class="num">${n}</th>`).join("")}<th>Observaciones</th><th></th></tr></thead>
@@ -892,7 +1119,7 @@ function renderArch(C,files){
     <button class="btn" id="dlZip">Descargar ZIP</button>
   </div>
   ${blockers.length||rhPend?`<div class="alertbox">${blockers.length?`<b>${blockers.length} observación(es) crítica(s):</b> ${esc(blockers.slice(0,4).join(" · "))}${blockers.length>4?" …":""}<br>`:""}${rhPend?`<b>${rhPend} recibo(s) sin número</b>: no van en .ps4 ni .4ta hasta completarlos.`:""}</div>`:""}
-  ${(()=>{const miss={};for(const w of C.workers)for(const c of allConcepts()){const a=r2(w.r.amounts[c.h]||0);if(a&&!codeFor(c.h)){miss[c.h]=miss[c.h]||{t:0,n:0};miss[c.h].t+=a;miss[c.h].n++}}
+  ${(()=>{const miss={};for(const w of C.workers)for(const c of allConcepts(!!w.cc)){const a=r2(w.r.amounts[c.h]||0);if(a&&!codeFor(c.h,!!w.cc)){miss[c.h]=miss[c.h]||{t:0,n:0};miss[c.h].t+=a;miss[c.h].n++}}
     const k=Object.keys(miss);if(!k.length)return `<p class="note">Todas las columnas de la planilla con montos en este periodo tienen código PLAME y se exportan.</p>`;
     return `<div class="alertbox"><b>Columnas con montos sin código PLAME:</b> no se están exportando. Asigna el código y se agregan al .rem, o regístralo como <button class="linkbtn" data-ver-codigos="${S.ruc}">código propio de la empresa</button>.<div class="row" style="margin-top:8px">${k.map(h=>`<label class="f">${esc(h)} · ${miss[h].n} trab. · S/ ${fmt(miss[h].t)}<input list="dl-conceptos" data-cc="${esc(h)}" placeholder="código" style="width:6em"></label>`).join("")}</div></div>`})()}
   <div class="files">${Object.keys(files).map(ext=>`<article class="panel file">
@@ -907,13 +1134,20 @@ function renderArch(C,files){
 function renderConf(C){
   const v=$("#v-conf");const st=S.settings;
   const present=new Set();for(const w of C.workers)for(const h in w.r.amounts)if(w.r.amounts[h])present.add(h);
+  const hayCC=C.workers.some(w=>w.cc),hayGen=C.workers.some(w=>!w.cc)||!hayCC;
+  const tablaCC=hayCC?`<section class="panel"><h3>Construcción civil: columnas → concepto PLAME</h3>
+    <div class="scroll"><table><thead><tr><th>Columna</th><th>Código</th><th>Concepto</th></tr></thead><tbody>
+    ${allConcepts(true).map(c=>{const ci=codeInfo(c.h,true);const tot=C.workers.filter(w=>w.cc).reduce((s,w)=>s+(w.r.amounts[c.h]||0),0);return `<tr><td>${esc(c.h)}${tot?` <span class="chip info">S/ ${fmt(tot)}</span>`:""}</td><td><input list="dl-conceptos" data-cc="${esc(c.h)}" data-ccmode="1" value="${esc(ci.code)}" style="width:4.5em;text-align:left" placeholder="—" aria-label="Código ${esc(c.h)}"${ci.src==="titulo"||ci.src==="empresa"||ci.src==="propio"?" disabled":""}>${ci.src==="auto"?' <span class="chip info">por nombre</span>':ci.src==="tabla22"?' <span class="chip info">Tabla 22</span>':""}</td><td style="white-space:normal">${esc(ci.label||(ci.code?descCodigo("concepto",ci.code):""))}</td></tr>`}).join("")}
+    </tbody></table></div>
+    <p class="note">Códigos según la boleta R08 de una planilla de construcción civil: jornal 0121, dominical 0115, BUC 0311, vacaciones 10 % 0114, horas extras 0105 / 0106, gratificación 0407, bonificación 9 % 0313, CTS 0904, movilidad 0909, bonificación extraordinaria 0922, CONAFOVICER 0602. Cámbialos si tu planilla los declara distinto.</p>
+  </section>`:"";
   v.innerHTML=`<div class="grid2">
-  <section class="panel"><h3>Columnas del Excel → concepto PLAME (tabla 22)</h3>
+  <div style="display:flex;flex-direction:column;gap:14px;min-width:0">${tablaCC}${hayGen?`<section class="panel"><h3>${hayCC?"Régimen general: c":"C"}olumnas del Excel → concepto PLAME (tabla 22)</h3>
     <div class="scroll"><table><thead><tr><th>Columna</th><th>Código</th><th>Concepto</th></tr></thead><tbody>
     ${allConcepts().map(c=>`<tr><td>${esc(c.h)}${c.extra?' <span class="chip warn">nueva</span>':""}${c.regla?' <span class="chip ok">regla de la empresa</span>':""}${c.propio?' <span class="chip ok">código propio de la empresa</span>':""}${(()=>{const x=colMap().find(y=>y.replaces===c.h);return x&&S.sheets.some(sh=>sh.rows.some(r=>x.h in r.amounts))?` <span class="chip info">reemplazada por ${esc(x.h)}</span>`:""})()}${present.has(c.h)?' <span class="chip info">con montos</span>':""}</td><td>${(()=>{const ci=codeInfo(c.h);return `<input list="dl-conceptos" data-cc="${esc(c.h)}" value="${esc(ci.code)}" style="width:4.5em;text-align:left" placeholder="—" aria-label="Código ${esc(c.h)}"${ci.src==="titulo"||ci.src==="empresa"||ci.src==="propio"?" disabled":""}>${ci.src==="titulo"?' <span class="chip ok">del título</span>':ci.src==="propio"?' <span class="chip ok">código propio</span>':ci.src==="auto"?' <span class="chip info">por nombre</span>':ci.src==="tabla22"?' <span class="chip info">Tabla 22</span>':""}`})()}</td><td style="white-space:normal">${esc(codeInfo(c.h).label||c.label)}</td></tr>`).join("")}
     </tbody></table></div>
     <p class="note">Una columna sin código no se exporta y aparece como observación. Para que un concepto no se envíe, deja su código vacío. Para registrar un código que no está en el catálogo o asociar una columna a un código propio de esta empresa, usa <button class="linkbtn" data-ver-codigos="${S.ruc}">Códigos PDT PLAME</button>.</p>
-  </section>
+  </section>`:""}</div>
   <div style="display:flex;flex-direction:column;gap:14px">
   <section class="panel"><h3>Días no laborados (tabla 21)</h3>
     <div class="row">
@@ -950,7 +1184,7 @@ dz.addEventListener("dragover",e=>{e.preventDefault();dz.classList.add("over")})
 dz.addEventListener("dragleave",()=>dz.classList.remove("over"));
 dz.addEventListener("drop",async e=>{e.preventDefault();dz.classList.remove("over");const f=e.dataTransfer.files[0];if(f)loadWorkbook(await readFile(f),f.name)});
 function setLiqPeriod(m,y){
-  if(m)S.month=m;if(y)S.year=y;for(const x of S.sheets)x.month=S.month;
+  if(m)S.month=m;if(y)S.year=y;for(const x of S.sheets)x.month=S.month;if(S.cc)S.cc.manual=null;
   if(S.rhFromFile){S.rhFromFile.month=S.month;S.rhFromFile.year=S.year;S.rh[sk()]=structuredClone(S.rhFromFile.list);save()}
   S.open={};render();toast(`Periodo: ${MESES[S.month-1].toLowerCase()} ${S.year}`);
 }
@@ -966,7 +1200,12 @@ document.addEventListener("change",async e=>{
   if(t.dataset.ov){const o=overFor(t.dataset.doc);const v=t.value===""?null:num(t.value);if(v==null)delete o[t.dataset.ov];else o[t.dataset.ov]=v;save();render();return}
   if(t.dataset.rh){const x=(S.rh[sk()]||[]).find(r=>r.id===t.dataset.id);if(x){x[t.dataset.rh]=t.dataset.rh==="monto"?r2(num(t.value)):t.value.trim();save();render()}return}
   if(t.id==="fileRH"){const f=t.files[0];if(f)importRH(await readFile(f));return}
-  if(t.dataset.cc!=null){S.settings.concepts[t.dataset.cc]=t.value.replace(/\D/g,"").slice(0,4);save();render();return}
+  if(t.dataset.cc!=null){const v=t.value.replace(/\D/g,"").slice(0,4);if(t.dataset.ccmode){S.settings.conceptsCC=S.settings.conceptsCC||{};S.settings.conceptsCC[t.dataset.cc]=v}else S.settings.concepts[t.dataset.cc]=v;save();render();return}
+  if(t.dataset.ccsheet!=null&&S.cc){S.cc.manual=[...document.querySelectorAll("[data-ccsheet]")].filter(x=>x.checked).map(x=>x.dataset.ccsheet);S.open={};render();return}
+  if(t.id==="fileTareo"&&S.cc){const f=t.files[0];if(!f)return;let wb2;try{wb2=XLSX.read(await readFile(f),{type:"array",cellDates:true})}catch(err){toast("No se pudo leer el tareo");return}
+    const tar=parseTareo(wb2);if(!tar.length){toast("No encontré una hoja de tareo con una X por día (por ejemplo «RESUMEN OCTUBRE»)");return}
+    S.cc.tareo=tar;S.cc.tareoArchivo=f.name;const T=tareoActual();render();
+    toast(T?`Tareo de ${MESES[T.mes-1].toLowerCase()}: ${T.trab.length} trabajador(es)`:`El tareo es de ${tar.map(x=>MESES[x.mes-1].toLowerCase()).join(", ")}: elige ese mes para usarlo`);return}
   if(t.dataset.snl){S.settings.snl[t.dataset.snl]=t.value.replace(/\D/g,"").slice(0,2);save();render();return}
   if(t.dataset.j){S.settings.jornadaManual=true;S.settings.jornada[t.dataset.j]=num(t.value);if(t.dataset.j!=="prom"){const j=S.settings.jornada,d=(j.lv>0?5:0)+(j.sab>0?1:0)+(j.dom>0?1:0);j.prom=d?r2((j.lv*5+j.sab+j.dom)/d):8}save();renderEmpresa();render();return}
   if(t.dataset.fer){S.settings.feriados[t.dataset.fer]=t.value;save();render();return}
@@ -975,6 +1214,7 @@ document.addEventListener("change",async e=>{
 document.addEventListener("click",async e=>{
   const t=e.target.closest("button");if(!t)return;
   if(t.dataset.toggle){S.open[t.dataset.toggle]=!S.open[t.dataset.toggle];render();return}
+  if(t.dataset.ccauto&&S.cc){S.cc.manual=null;render();return}
   if(t.dataset.reset){const k=sk();if(S.over[k])delete S.over[k][t.dataset.reset];save();render();return}
   if(t.dataset.rhdel){const k=sk();S.rh[k]=(S.rh[k]||[]).filter(r=>r.id!==t.dataset.rhdel);save();render();return}
   if(t.id==="rhAdd"){const k=sk();(S.rh[k]=S.rh[k]||[]).push({id:Math.random().toString(36).slice(2),tipo:"06",num:"",ap:"",am:"",no:"",serie:"E001",numero:"",monto:0,fe:lastDay(),fp:lastDay(),ret:"1",fuente:"Manual"});save();render();return}
@@ -1043,7 +1283,7 @@ return {
     if(!S.sheets.length||!S.ruc)return null;
     const C=compute();if(!C)return null;
     const rh=rhList(C);const ok=rh.filter(x=>rhIn(x).ok);
-    const sinCod={};for(const w of C.workers)for(const c of allConcepts()){const a=r2(w.r.amounts[c.h]||0);if(a&&!codeFor(c.h))sinCod[c.h]=(sinCod[c.h]||0)+a}
+    const sinCod={};for(const w of C.workers)for(const c of allConcepts(!!w.cc)){const a=r2(w.r.amounts[c.h]||0);if(a&&!codeFor(c.h,!!w.cc))sinCod[c.h]=(sinCod[c.h]||0)+a}
     return {ruc:S.ruc,periodo:periodKey(),archivo:$("#planillaName").textContent,trabajadores:C.workers.length,sinPlanilla:!!C.sheet.sinPlanilla,
       criticas:C.workers.flatMap(w=>w.alerts.filter(a=>a.t==="bad").map(a=>`${w.r.nombre}: ${a.m}`)),
       avisos:C.workers.flatMap(w=>w.alerts.filter(a=>a.t==="warn").map(a=>`${w.r.nombre}: ${a.m}`)),
@@ -1716,6 +1956,7 @@ function renderSunat(){
   q("#sunatV3").hidden=DB.v3;
   const cx=VAL.conexion;const ce=q("#sunatConexion");
   ce.className="chip "+(cx==null?"muted":cx.configurado?"ok":"bad");ce.textContent=cx==null?"Conexión sin probar":cx.configurado?"SUNAT conectado":"SUNAT sin conectar";ce.title=cx?cx.mensaje:"";
+  const cm=q("#sunatConexionMsg");cm.hidden=!(cx&&!cx.configurado&&cx.mensaje);if(!cm.hidden)cm.innerHTML=`<b>No se pudo conectar con SUNAT.</b> ${escH(cx.mensaje)}`;
   const hay=VAL.libros.ventas.length+VAL.libros.compras.length;
   q("#sunatVacio").hidden=!!hay;q("#sunatTrabajo").hidden=!hay;
   q("#sunatHojas").textContent=hay?`Hojas leídas: ${VAL.hojas.ventas||"sin registro de ventas"} · ${VAL.hojas.compras||"sin registro de compras"}`:"";
