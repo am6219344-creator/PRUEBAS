@@ -1,0 +1,689 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="description" content="INORDER - EQUIPO CONTABLE · Plataforma de gestión contable y exportador PDT PLAME (Formulario 0601)">
+<title>INORDER - EQUIPO CONTABLE · Exportador PLAME</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230f5c56'/%3E%3Ctext x='16' y='21.5' font-family='Arial,sans-serif' font-weight='700' font-size='14' fill='white' text-anchor='middle'%3EIN%3C/text%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+<!-- Librerías: lectura de Excel, creación del ZIP y conexión con Supabase -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.119.0/dist/umd/supabase.js"></script>
+<script src="script.js" defer></script>
+</head>
+<body>
+
+<!-- ================= PANTALLA DE CARGA ================= -->
+<div class="loading" id="boot"><div class="spinner"></div><span>Cargando…</span></div>
+
+<!-- ================= INICIO DE SESIÓN ================= -->
+<main class="login" id="login" hidden>
+  <section class="login-brand">
+    <div class="brand-lockup" aria-label="INORDER - EQUIPO CONTABLE">
+      <div class="brand-mark" aria-hidden="true"><span>IN</span></div>
+      <div class="brand-words">
+        <div class="brand-name">INORDER</div>
+        <div class="brand-team"><span class="rule" aria-hidden="true"></span>EQUIPO CONTABLE</div>
+      </div>
+    </div>
+    <div class="brand-pitch">
+      <div class="eyebrow">Plataforma de gestión contable</div>
+      <h1>Exportador PDT PLAME</h1>
+      <p>Administra la planilla de cada empresa de la cartera, identifícalas por color y genera los archivos de importación del Formulario 0601.</p>
+    </div>
+    <ul>
+      <li>Lee la liquidación en Excel y calcula días, horas y conceptos PLAME.</li>
+      <li>Cada empresa con su color, su jornada y sus propios códigos PDT PLAME.</li>
+      <li>Descarga el ZIP con los archivos .rem, .jor, .snl, .ps4 y .4ta.</li>
+      <li>Empresas, ajustes e historial guardados de forma segura en la nube.</li>
+    </ul>
+  </section>
+  <section class="login-form-wrap">
+    <form class="login-form" id="loginForm" novalidate>
+      <div class="form-brand">
+        <div class="brand-mark sm" aria-hidden="true"><span>IN</span></div>
+        <div><div class="brand-line">INORDER - EQUIPO CONTABLE</div><div class="eyebrow">Acceso restringido</div></div>
+      </div>
+      <h2>Iniciar sesión</h2>
+      <div class="alertbox bad" id="loginErr" role="alert" hidden></div>
+      <div class="alertbox" id="configErr" hidden>
+        <b>Falta conectar la base de datos.</b> Abre <span class="mono">script.js</span> y completa
+        <span class="mono">SUPABASE_URL</span> y <span class="mono">SUPABASE_ANON_KEY</span> (el cuaderno de Google Colab lo hace por ti).
+      </div>
+      <label class="field"><span>Usuario (correo electrónico)</span>
+        <input type="email" id="loginEmail" autocomplete="username" required></label>
+      <label class="field"><span>Contraseña</span>
+        <span class="pw-wrap"><input type="password" id="loginPass" autocomplete="current-password" required>
+        <button type="button" id="togglePass" aria-label="Mostrar contraseña">Mostrar</button></span></label>
+      <button class="btn" id="loginBtn" type="submit">Ingresar</button>
+      <p class="login-foot">Solo pueden ingresar los usuarios del equipo creados por la administradora. Si olvidaste tu contraseña, pídele que la restablezca.<br><span class="mono">INORDER · Equipo Contable</span></p>
+    </form>
+  </section>
+</main>
+
+<!-- ================= APLICACIÓN ================= -->
+<div class="app" id="app" hidden>
+  <aside class="sidebar" id="sidebar">
+    <div class="side-brand">
+      <div class="logo">IN</div>
+      <div><b>INORDER</b><span>Equipo contable · PLAME</span></div>
+    </div>
+    <button class="menu-toggle" id="menuToggle" aria-expanded="false" aria-controls="nav">Menú</button>
+    <nav class="nav" id="nav" aria-label="Secciones">
+      <button data-sec="panel" aria-current="page"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Panel principal</button>
+      <button data-sec="exportar"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 12v6m-3-3 3 3 3-3"/></svg>Exportar PLAME</button>
+      <button data-sec="empresas"><svg viewBox="0 0 24 24"><path d="M4 21V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v16"/><path d="M16 9h2a2 2 0 0 1 2 2v10"/><path d="M3 21h18M8 7h4M8 11h4M8 15h4"/></svg>Empresas</button>
+      <button data-sec="codigos"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7"/><circle cx="18" cy="16" r="3"/><path d="M18 13v-1m0 8v-1m3-3h1m-8 0h1"/></svg>Códigos PLAME</button>
+      <button data-sec="sunat"><svg viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>Validación SUNAT</button>
+      <button data-sec="historial"><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>Historial</button>
+      <button data-sec="sugerencias"><svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 10h7M8.5 13.5h4.5"/></svg>Sugerencias</button>
+      <button data-sec="notas"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.9V16h5v-.2c0-.8.4-1.5 1-1.9A6 6 0 0 0 12 3z"/></svg>Comentarios y recomendaciones</button>
+      <button data-sec="config"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Configuración</button>
+    </nav>
+    <div class="side-foot">
+      <div class="save-state" id="saveState" data-s="ok" aria-live="polite">Todo guardado</div>
+      <div class="side-user"><b id="userEmail">—</b>Sesión iniciada</div>
+      <button class="btn sm side-out" id="logoutBtn" type="button">Cerrar sesión</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="alertbox banner" id="bannerV2" hidden>
+      <b>Falta un paso para activar los colores y los códigos PDT PLAME por empresa:</b> ejecuta el archivo
+      <span class="mono">supabase_actualizacion_v2.sql</span> en Supabase → SQL Editor y vuelve a ingresar. Mientras tanto, todo lo demás funciona con normalidad.
+    </div>
+
+    <!-- ---------- PANEL PRINCIPAL ---------- -->
+    <section class="section" id="sec-panel">
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Resumen</div>
+          <h1>Panel principal</h1>
+          <div class="sub">Avance del PLAME de la cartera por periodo</div>
+        </div>
+        <div class="row">
+          <label class="f">Mes<select id="dashMes"></select></label>
+          <label class="f">Año<input type="number" id="dashAnio" min="2020" max="2099" style="width:6em"></label>
+        </div>
+      </header>
+      <section class="panel kpis" id="dashKpis"></section>
+      <div class="dash-grid">
+        <section class="panel card">
+          <div class="card-head">
+            <div><h2>Avance del periodo</h2><p class="note" style="margin:2px 0 0" id="dashAvanceNote"></p></div>
+            <label class="f">Mostrar<select id="dashFiltro">
+              <option value="todas">Todas las empresas activas</option>
+              <option value="pendiente">Solo pendientes</option>
+              <option value="generado">Solo generadas</option>
+              <option value="declarado">Solo declaradas</option>
+              <option value="observado">Solo observadas</option>
+            </select></label>
+          </div>
+          <div class="scroll"><table>
+            <thead><tr><th>Empresa</th><th>Estado</th><th class="num">Trab.</th><th class="num">Ingresos</th><th class="num">Renta 5ta</th><th></th></tr></thead>
+            <tbody id="dashTabla"></tbody>
+          </table></div>
+        </section>
+        <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+          <section class="panel card">
+            <div class="card-head"><div><h2>Ingresos declarados por periodo</h2><p class="note" style="margin:2px 0 0">Por empresa, últimos 12 periodos</p></div></div>
+            <div class="chart" id="dashChart"></div>
+            <p class="note" style="margin:0">Cada color es una empresa · pasa el mouse sobre una barra para ver el detalle · el periodo elegido está resaltado.</p>
+            <div class="legend" id="dashLeyenda"></div>
+          </section>
+          <section class="panel card">
+            <h2>Estado de la cartera</h2>
+            <div class="status-list" id="dashCartera"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- EXPORTAR PLAME (funcionalidad del artefacto original) ---------- -->
+    <section class="section" id="sec-exportar" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Planilla Mensual de Pagos · Formulario 0601</div>
+          <h1 class="emp-title"><span class="dot lg" id="empColor" hidden></span><span id="empNombre">—</span></h1>
+          <div class="sub">Exportador de archivos de importación para el PDT PLAME</div>
+        </div>
+        <label class="ruc f" style="align-items:flex-end">Empresa
+          <select id="empresa" aria-label="Empresa" style="max-width:min(100%,340px)"></select>
+          <span>RUC <b id="empRuc">—</b></span><span id="empJornada" style="font-size:.75rem"></span><span id="empCodigos" style="font-size:.78rem;font-family:var(--sans)"></span></label>
+      </header>
+
+      <div class="alertbox" id="noEmpresas" hidden>
+        Todavía no hay empresas activas. Ve a <button class="linkbtn" data-go="empresas">Empresas</button> y registra la primera.
+      </div>
+
+      <div id="exportWrap" style="display:flex;flex-direction:column;gap:18px">
+        <section class="panel loadbar">
+          <div>
+            <div class="eyebrow">1 · Planilla del cliente</div>
+            <label class="drop" id="dropPlanilla">
+              <input type="file" id="filePlanilla" accept=".xlsx,.xlsm,.xls">
+              <span class="btn sm">Elegir Excel</span>
+              <span class="fname" id="planillaName">Arrastra aquí la liquidación de impuestos del mes o la base de datos ENERO–DICIEMBRE (.xlsx)</span>
+            </label>
+          </div>
+          <div>
+            <div class="eyebrow">2 · Periodo a declarar</div>
+            <div class="months" id="months"><span class="note">Los meses aparecen al cargar el Excel.</span></div>
+            <div class="row">
+              <label class="f">Año<input type="number" id="year" min="2020" max="2099" style="width:6em"></label>
+              <span class="note" id="periodLabel"></span>
+            </div>
+          </div>
+        </section>
+
+        <div class="alertbox info" id="cpeAviso" hidden></div>
+
+        <section class="panel stats" id="stats" hidden>
+          <div><div class="eyebrow">Trabajadores</div><div class="v" id="sWorkers">0</div></div>
+          <div><div class="eyebrow">Ingresos declarados</div><div class="v" id="sIngresos">0.00</div></div>
+          <div><div class="eyebrow">Renta 5ta (0605)</div><div class="v" id="sQuinta">0.00</div></div>
+          <div><div class="eyebrow">Recibos 4ta</div><div class="v" id="sRH">0</div></div>
+          <div><div class="eyebrow">Observaciones</div><div class="v" id="sObs">0</div></div>
+        </section>
+
+        <section id="workspace" hidden>
+          <nav class="tabs" role="tablist">
+            <button role="tab" data-tab="trab" aria-selected="true">Trabajadores <span class="count" id="cTrab">0</span></button>
+            <button role="tab" data-tab="rh" aria-selected="false">Recibos por honorarios <span class="count" id="cRH">0</span></button>
+            <button role="tab" data-tab="arch" aria-selected="false">Archivos TXT</button>
+            <button role="tab" data-tab="conf" aria-selected="false">Conceptos y jornada</button>
+          </nav>
+          <div class="view" id="v-trab"></div>
+          <div class="view" id="v-rh" hidden></div>
+          <div class="view" id="v-arch" hidden></div>
+          <div class="view" id="v-conf" hidden></div>
+        </section>
+
+        <section class="panel empty-state" id="emptyState">
+          <h2>Carga la planilla para empezar</h2>
+          <ol>
+            <li>Sube la liquidación de impuestos del mes (hojas «04. PLANILLA» y «03. RxH»). También sirve la base de datos con una hoja por mes.</li>
+            <li>Elige el mes. Se leen solo las filas con modalidad <b>Planilla</b> y <b>Recibo por Honorarios</b>; arrendamiento y regalías quedan fuera del PLAME.</li>
+            <li>Revisa días, horas, observaciones y recibos por honorarios (se leen de la hoja RxH).</li>
+            <li>Descarga el ZIP con <span class="mono">0601AAAAMM + RUC .rem / .jor / .snl / .ps4 / .4ta</span> y descomprímelo en la carpeta de importación del PLAME.</li>
+          </ol>
+          <p class="note">El Excel se procesa solo en tu navegador; no se sube a ningún servidor. Solo se guardan en la nube tus correcciones, la configuración de cada empresa y el resumen de cada exportación.</p>
+        </section>
+      </div>
+    </section>
+
+    <!-- ---------- EMPRESAS ---------- -->
+    <section class="section" id="sec-empresas" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Cartera</div>
+          <h1>Empresas</h1>
+          <div class="sub">RUC, color, alias para reconocer el Excel, jornada, reglas y códigos de cada cliente</div>
+        </div>
+        <button class="btn" id="empNueva" type="button">+ Nueva empresa</button>
+      </header>
+      <div class="toolbar">
+        <div class="filters">
+          <label class="f">Buscar<input type="search" id="empBuscar" placeholder="Nombre, RUC o alias" style="min-width:220px"></label>
+          <label class="f">Filtrar<select id="empFiltro">
+            <option value="todas">Todas</option>
+            <option value="activas">Activas</option>
+            <option value="inactivas">Inactivas</option>
+            <option value="pordefinir">Jornada por definir</option>
+            <option value="regla">Con reglas especiales</option>
+            <option value="codigos">Con códigos PDT PLAME propios</option>
+          </select></label>
+        </div>
+        <span class="note" id="empConteo"></span>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>RUC</th><th>Razón social</th><th>Alias</th><th class="num">L–V (h)</th><th class="num">Sáb. (h)</th><th>Reglas</th><th class="num" title="Códigos PDT PLAME propios">Códigos</th><th>Estado</th><th></th></tr></thead>
+        <tbody id="empTabla"></tbody>
+      </table></div>
+    </section>
+
+    <!-- ---------- CÓDIGOS PDT PLAME ---------- -->
+    <section class="section" id="sec-codigos" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Catálogo por empresa</div>
+          <h1>Códigos PDT PLAME</h1>
+          <div class="sub">Códigos propios de cada empresa: conceptos (tabla 22) y días no laborados (tabla 21). Los cambios en una empresa no afectan a las demás.</div>
+        </div>
+        <button class="btn" id="codNuevo" type="button">+ Nuevo código</button>
+      </header>
+      <div class="alertbox" id="codSinV2" hidden>Para usar esta sección ejecuta <span class="mono">supabase_actualizacion_v2.sql</span> en Supabase → SQL Editor.</div>
+      <div class="toolbar">
+        <div class="filters">
+          <label class="f">Buscar<input type="search" id="codBuscar" placeholder="Código, descripción o columna" style="min-width:210px"></label>
+          <label class="f">Empresa<select id="codEmpresa"></select></label>
+          <label class="f">Tipo<select id="codTipo">
+            <option value="">Todos</option><option value="concepto">Conceptos (tabla 22)</option><option value="snl">Días no laborados (tabla 21)</option>
+          </select></label>
+          <label class="f">Estado<select id="codEstado">
+            <option value="">Todos</option><option value="activos">Activos</option><option value="inactivos">Inactivos</option>
+          </select></label>
+        </div>
+        <span class="note" id="codConteo"></span>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Empresa</th><th>Tipo</th><th>Código</th><th>Descripción</th><th>Columna del Excel</th><th>Estado</th><th class="num" title="Exportaciones del historial que usan el código">En historial</th><th></th></tr></thead>
+        <tbody id="codTabla"></tbody>
+      </table></div>
+      <div class="grid2 cod-help">
+        <section class="panel">
+          <h3>¿Cómo se usan los códigos propios?</h3>
+          <ul class="note" style="margin:0;padding-left:1.1em;display:flex;flex-direction:column;gap:4px">
+            <li><b>Concepto con columna del Excel:</b> los montos de esa columna se declaran en el .rem con ese código, solo en esa empresa.</li>
+            <li><b>Concepto sin columna:</b> aparece como sugerencia al escribir códigos en «Conceptos y jornada» y «Archivos TXT».</li>
+            <li><b>Día no laborado:</b> aparece como opción de código de licencia de cada trabajador y como sugerencia en los códigos de días no laborados.</li>
+            <li><b>Inactivo:</b> deja de usarse en nuevas exportaciones, pero se conserva para consulta.</li>
+          </ul>
+        </section>
+        <section class="panel">
+          <h3>Protección del historial</h3>
+          <p class="note" style="margin:0">Cada exportación guarda los códigos que utilizó. Un código que ya figura en el historial no se puede eliminar ni cambiar de número: solo puedes editar su descripción o desactivarlo.</p>
+        </section>
+      </div>
+      <details class="panel catalogo">
+        <summary><b>Catálogo base · Tabla 22 del PDT PLAME</b> <span class="note">· 262 conceptos oficiales de SUNAT para todas las empresas (solo lectura; usa el buscador de arriba para filtrarlos)</span></summary>
+        <div class="grid2" style="padding:0 14px 14px">
+          <div><h3 style="margin:8px 0">Ingresos, tributos y descuentos (tabla 22) <span class="note" id="codBaseConteo"></span></h3><div class="scroll" style="max-height:420px;overflow:auto"><table><thead><tr><th>Código</th><th>Concepto</th></tr></thead><tbody id="codBaseConceptos"></tbody></table></div></div>
+          <div><h3 style="margin:8px 0">Días no laborados (tabla 21)</h3><div class="scroll"><table><thead><tr><th>Código</th><th>Concepto</th></tr></thead><tbody id="codBaseSnl"></tbody></table></div></div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ---------- VALIDACIÓN SUNAT ---------- -->
+    <section class="section" id="sec-sunat" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Consulta integrada de comprobantes de pago · SUNAT</div>
+          <h1 class="emp-title" id="sunatTitulo">Validación de comprobantes</h1>
+          <div class="sub">Valida las ventas y compras de la liquidación: comprobante aceptado, contribuyente activo y domicilio habido</div>
+        </div>
+        <div class="row">
+          <span class="chip muted" id="sunatConexion">Conexión sin probar</span>
+          <button class="btn ghost sm" id="sunatProbar" type="button">Probar conexión</button>
+        </div>
+      </header>
+      <div class="alertbox bad" id="sunatConexionMsg" role="alert" hidden></div>
+      <div class="alertbox" id="sunatV3" hidden>Para guardar los resultados ejecuta <span class="mono">supabase_actualizacion_v3.sql</span> en Supabase → SQL Editor. Mientras tanto puedes validar, pero los resultados no quedarán guardados.</div>
+      <section class="panel loadbar">
+        <div>
+          <div class="eyebrow">1 · Liquidación o registros de CONCAR</div>
+          <label class="drop" id="sunatDrop">
+            <input type="file" id="sunatFile" accept=".xlsx,.xlsm,.xls" multiple>
+            <span class="btn sm">Elegir Excel</span>
+            <span class="fname" id="sunatArchivo">Arrastra aquí la liquidación o los registros de ventas y compras de CONCAR (.xlsx)</span>
+          </label>
+          <span class="note" id="sunatHojas"></span>
+        </div>
+        <div>
+          <div class="eyebrow">2 · Empresa y periodo</div>
+          <label class="f">Empresa (emisora de las ventas)<select id="sunatEmpresa"></select></label>
+          <label class="f">Periodo<input type="month" id="sunatPeriodo" style="width:11em"></label>
+          <p class="note" style="margin:0">Si cargas la liquidación en «Exportar PLAME», también aparece aquí automáticamente.</p>
+        </div>
+      </section>
+      <section class="panel empty-state" id="sunatVacio">
+        <h2>Carga una liquidación para validar sus comprobantes</h2>
+        <ol>
+          <li>Se leen las hojas de <b>ventas</b> y <b>compras</b> de la liquidación, o los registros que exporta <b>CONCAR</b> (Formato 14.1 de ventas y 8.1 de compras). Puedes subir los dos archivos juntos.</li>
+          <li>Pulsa <b>Validar con SUNAT</b>: cada comprobante se consulta en la API oficial de SUNAT.</li>
+          <li>Revisa los observados: anulados, inexistentes, proveedores de baja o no habidos.</li>
+          <li>Descarga el resultado en Excel con el mismo formato de tus hojas «VALIDACIÓN DE VENTAS / COMPRAS».</li>
+          <li>O usa la pestaña <b>TXT para SUNAT</b>: copia y pega el archivo de la consulta masiva de SOL (hasta 100 comprobantes por archivo).</li>
+        </ol>
+      </section>
+      <div id="sunatTrabajo" hidden style="display:flex;flex-direction:column;gap:14px">
+        <nav class="tabs" id="sunatTabs" role="tablist">
+          <button role="tab" data-libro="ventas" aria-selected="true">Ventas <span class="count" id="cTabVentas">0</span></button>
+          <button role="tab" data-libro="compras" aria-selected="false">Compras <span class="count" id="cTabCompras">0</span></button>
+          <button role="tab" data-libro="txt" aria-selected="false">TXT para SUNAT</button>
+        </nav>
+        <div id="sunatVistaTxt" class="txt-vista" hidden>
+          <section class="panel card">
+            <div class="card-head">
+              <div><h2>Archivo para la consulta masiva de SUNAT</h2>
+                <p class="note" style="margin:2px 0 0">Una línea por comprobante: <span class="mono">RUC emisor | tipo | serie | número | fecha de emisión | importe total</span>. SUNAT acepta hasta 100 comprobantes por archivo; si hay más, se dividen. Cópialo y pégalo en un .txt, o descárgalo directamente.</p></div>
+              <span class="note mono" id="txtNombreBase" hidden></span>
+            </div>
+            <div class="row">
+              <label class="f">Comprobantes de<select id="txtLibro"><option value="ambos">Ventas y compras</option><option value="ventas">Solo ventas</option><option value="compras">Solo compras</option></select></label>
+              <label class="f">Separador<select id="txtSep"><option value="|">Barra vertical  |</option><option value=";">Punto y coma  ;</option><option value=",">Coma  ,</option><option value="&#9;">Tabulación</option></select></label>
+              <label class="check" style="align-self:flex-end"><input type="checkbox" id="txtSoloPend"><span>Solo los que aún no están validados</span></label>
+            </div>
+            <p class="note" id="txtResumen" style="margin:0"></p>
+            <div class="files" id="txtBloques"></div>
+            <p class="note" style="margin:0">En SOL: Empresas → Comprobantes de pago → Consulta de validez de comprobantes de pago → consulta masiva. Las notas de crédito van con el importe en positivo y los importes en moneda extranjera se convierten con el tipo de cambio del registro.</p>
+            <div id="txtExcluidos" hidden>
+              <h3 style="margin:6px 0">No incluidos en el TXT</h3>
+              <div class="scroll"><table><thead><tr><th>Libro</th><th>Comprobante</th><th>RUC / doc.</th><th>Razón social</th><th>Motivo</th></tr></thead><tbody id="txtExcluidosLista"></tbody></table></div>
+            </div>
+          </section>
+          <section class="panel card">
+            <div class="card-head"><div><h2>Resultado de la validación en texto</h2><p class="note" style="margin:2px 0 0" id="txtResultadoNota"></p></div>
+              <div class="row" style="gap:6px"><button class="btn sm" type="button" id="txtResCopiar">Copiar</button><button class="btn ghost sm" type="button" id="txtResDl">Descargar .txt</button></div></div>
+            <textarea class="txt-area" id="txtResultado" readonly rows="10" aria-label="Resultado de la validación en texto"></textarea>
+          </section>
+        </div>
+        <div id="sunatVistaLibro" style="display:flex;flex-direction:column;gap:14px">
+        <section class="panel kpis" id="sunatKpis"></section>
+        <div class="toolbar">
+          <div class="filters">
+            <label class="f">Buscar<input type="search" id="sunatBuscar" placeholder="Serie, número, RUC o razón social" style="min-width:220px"></label>
+            <label class="f">Mostrar<select id="sunatFiltro">
+              <option value="">Todos</option><option value="pendiente">Pendientes y con error</option><option value="valido">Válidos</option>
+              <option value="observado">Observados</option><option value="no_validable">No validables</option>
+            </select></label>
+          </div>
+          <div class="row">
+            <button class="btn" id="sunatValidar" type="button">Validar con SUNAT</button>
+            <button class="btn ghost sm" id="sunatCancelar" type="button" hidden>Detener</button>
+            <button class="btn ghost sm" id="sunatTodo" type="button">Volver a validar todo</button>
+            <button class="btn ghost sm" id="sunatExcel" type="button">Descargar Excel</button>
+          </div>
+        </div>
+        <div class="scroll"><table>
+          <thead><tr><th>Correlativo</th><th>Emisión</th><th>Tipo</th><th>Comprobante</th><th>RUC emisor</th><th id="sunatCabeceraDoc">Cliente</th><th class="num">Importe</th><th>Estado comprobante</th><th>Estado contribuyente</th><th>Condición domicilio</th><th>Resultado</th><th>Validado</th></tr></thead>
+          <tbody id="sunatTabla"></tbody>
+        </table></div>
+        <p class="note" style="margin:0">Ventas: el emisor es la empresa elegida. Compras: el emisor es el proveedor. SUNAT solo valida facturas, boletas, liquidaciones de compra, notas de crédito y débito y recibos por honorarios; los demás tipos se marcan como «No validables». Las notas de crédito se consultan con el importe en positivo y los importes en moneda extranjera se convierten con el tipo de cambio del registro.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- SUGERENCIAS Y COMENTARIOS ---------- -->
+    <section class="section" id="sec-sugerencias" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Equipo</div>
+          <h1>Sugerencias y comentarios</h1>
+          <div class="sub">Propón mejoras, deja comentarios, reporta errores o haz consultas; todo el equipo puede verlas y responderlas</div>
+        </div>
+      </header>
+      <div class="alertbox" id="sugV3" hidden>Para usar esta sección ejecuta <span class="mono">supabase_actualizacion_v3.sql</span> en Supabase → SQL Editor.</div>
+      <div class="sug-grid">
+        <form class="panel card" id="sugForm" novalidate>
+          <h2>Nuevo mensaje</h2>
+          <div class="form-grid">
+            <label class="field"><span>Tipo</span><select id="sugTipo"><option value="sugerencia">Sugerencia</option><option value="comentario">Comentario</option><option value="error">Reporte de error</option><option value="consulta">Consulta</option></select></label>
+            <label class="field"><span>Prioridad</span><select id="sugPrioridad"><option value="baja">Baja</option><option value="media" selected>Media</option><option value="alta">Alta</option></select></label>
+            <label class="field full"><span>Sección de la página</span><select id="sugSeccion"><option>General</option><option>Panel principal</option><option>Exportar PLAME</option><option>Empresas</option><option>Códigos PLAME</option><option>Validación SUNAT</option><option>Comentarios y recomendaciones</option><option>Historial</option><option>Configuración</option></select></label>
+            <label class="field full"><span>Título *</span><input type="text" id="sugTitulo" maxlength="120" placeholder="Ej.: Agregar filtro por mes en el historial"><span class="field-err" data-err="titulo" hidden></span></label>
+            <label class="field full"><span>Mensaje *</span><textarea id="sugMensaje" maxlength="2000" rows="5" placeholder="Describe tu idea, comentario o el error que encontraste (qué hiciste y qué pasó)."></textarea><span class="field-err" data-err="mensaje" hidden></span></label>
+          </div>
+          <div class="row" style="justify-content:space-between"><span class="note" id="sugCuenta">0 / 2000</span><button class="btn" id="sugEnviar" type="submit">Enviar</button></div>
+        </form>
+        <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+          <div class="toolbar">
+            <div class="filters">
+              <label class="f">Buscar<input type="search" id="sugBuscar" placeholder="Título, texto o autor"></label>
+              <label class="f">Tipo<select id="sugFTipo"><option value="">Todos</option><option value="sugerencia">Sugerencias</option><option value="comentario">Comentarios</option><option value="error">Reportes de error</option><option value="consulta">Consultas</option></select></label>
+              <label class="f">Estado<select id="sugFEstado"><option value="">Todos</option><option value="abiertos">Abiertos</option><option value="nuevo">Nuevos</option><option value="en_revision">En revisión</option><option value="resuelto">Resueltos</option><option value="descartado">Descartados</option></select></label>
+            </div>
+            <span class="note" id="sugConteo"></span>
+          </div>
+          <div id="sugLista" class="sug-lista"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- COMENTARIOS Y RECOMENDACIONES ---------- -->
+    <section class="section" id="sec-notas" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Por empresa y periodo</div>
+          <h1 class="emp-title" id="notasTitulo">Comentarios y recomendaciones</h1>
+          <div class="sub">Recomendaciones automáticas de la liquidación y la validación SUNAT, y comentarios del equipo para cada periodo</div>
+        </div>
+        <div class="row">
+          <label class="f">Empresa<select id="notaEmpresa" style="max-width:260px"></select></label>
+          <label class="f">Periodo<input type="month" id="notaPeriodo" style="width:11em"></label>
+          <button class="btn ghost sm" type="button" id="notaUsarActual" style="align-self:flex-end">Usar lo cargado</button>
+        </div>
+      </header>
+      <div class="alertbox" id="notasV4" hidden>Para guardar comentarios ejecuta <span class="mono">supabase_actualizacion_v4.sql</span> en Supabase → SQL Editor. Las recomendaciones automáticas funcionan igual.</div>
+      <div class="notas-grid">
+        <section class="panel card">
+          <div class="card-head"><div><h2>Recomendaciones automáticas</h2><p class="note" style="margin:2px 0 0">Según la liquidación cargada en «Exportar PLAME» y la validación SUNAT de este periodo.</p></div></div>
+          <div id="recLista" class="rec-lista"></div>
+        </section>
+        <div style="display:flex;flex-direction:column;gap:12px;min-width:0">
+          <form class="panel card" id="notaForm" novalidate>
+            <h2>Nuevo comentario</h2>
+            <label class="field"><span>Tipo</span><select id="notaTipo"><option value="comentario">Comentario</option><option value="recomendacion">Recomendación</option></select></label>
+            <label class="field"><span>Texto *</span><textarea id="notaTexto" rows="4" maxlength="2000" placeholder="Ej.: El cliente envió la planilla con 2 días de retraso; confirmar el descanso médico de Sayume."></textarea><span class="field-err" data-err="texto" hidden></span></label>
+            <div class="row" style="justify-content:flex-end"><button class="btn" id="notaGuardar" type="submit">Guardar</button></div>
+          </form>
+          <div class="toolbar">
+            <div class="filters">
+              <label class="f">Estado<select id="notaFiltro"><option value="">Todos</option><option value="pendiente">Pendientes</option><option value="atendido">Atendidos</option></select></label>
+              <label class="check" style="align-self:flex-end"><input type="checkbox" id="notaTodos"><span>Ver todos los periodos de la empresa</span></label>
+            </div>
+            <span class="note" id="notaConteo"></span>
+          </div>
+          <div id="notaLista" class="sug-lista"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- HISTORIAL ---------- -->
+    <section class="section" id="sec-historial" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Reportes</div>
+          <h1>Historial de exportaciones</h1>
+          <div class="sub">Cada ZIP descargado se registra aquí; puedes marcarlo como declarado y anotar observaciones</div>
+        </div>
+        <div class="row">
+          <button class="btn ghost" id="histCsv" type="button">Descargar reporte CSV</button>
+          <button class="btn" id="histNuevo" type="button">+ Registro manual</button>
+        </div>
+      </header>
+      <div class="toolbar">
+        <div class="filters">
+          <label class="f">Buscar<input type="search" id="histBuscar" placeholder="Empresa, RUC o nota" style="min-width:200px"></label>
+          <label class="f">Empresa<select id="histEmpresa"></select></label>
+          <label class="f">Año<select id="histAnio"></select></label>
+          <label class="f">Estado<select id="histEstado">
+            <option value="">Todos</option><option value="generado">Generado</option><option value="declarado">Declarado</option><option value="observado">Observado</option>
+          </select></label>
+        </div>
+        <span class="note" id="histConteo"></span>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>Periodo</th><th>Empresa</th><th class="num">Trab.</th><th class="num">Ingresos</th><th class="num">Renta 5ta</th><th class="num">Recibos</th><th class="num">Obs.</th><th class="num" title="Códigos PDT PLAME usados en la exportación">Códigos</th><th>Estado</th><th>Nota</th><th>Actualizado</th><th></th></tr></thead>
+        <tbody id="histTabla"></tbody>
+        <tfoot id="histPie"></tfoot>
+      </table></div>
+    </section>
+
+    <!-- ---------- CONFIGURACIÓN ---------- -->
+    <section class="section" id="sec-config" hidden>
+      <header class="page-head">
+        <div>
+          <div class="eyebrow">Cuenta</div>
+          <h1>Configuración</h1>
+          <div class="sub">Tu sesión, contraseña, apariencia y copia de seguridad</div>
+        </div>
+      </header>
+      <div class="settings-grid">
+        <section class="panel card">
+          <h2>Mi cuenta</h2>
+          <dl class="kv">
+            <dt>Usuario</dt><dd id="cfgEmail">—</dd>
+            <dt>Último ingreso</dt><dd id="cfgUltimo">—</dd>
+            <dt>Base de datos</dt><dd id="cfgDb" class="mono">—</dd>
+          </dl>
+          <button class="btn ghost sm" id="cfgLogout" type="button" style="align-self:flex-start">Cerrar sesión</button>
+        </section>
+        <section class="panel card">
+          <h2>Cambiar contraseña</h2>
+          <form id="pwForm" novalidate style="display:flex;flex-direction:column;gap:10px">
+            <label class="field"><span>Nueva contraseña (mínimo 8 caracteres)</span><input type="password" id="pwNew" autocomplete="new-password"></label>
+            <label class="field"><span>Repite la nueva contraseña</span><input type="password" id="pwNew2" autocomplete="new-password"></label>
+            <div class="field-err" id="pwErr" hidden></div>
+            <button class="btn sm" type="submit" style="align-self:flex-start">Actualizar contraseña</button>
+          </form>
+        </section>
+        <section class="panel card">
+          <h2>Apariencia y seguridad</h2>
+          <label class="f">Tema<select id="cfgTema">
+            <option value="auto">Automático (según el equipo)</option><option value="light">Claro</option><option value="dark">Oscuro</option>
+          </select></label>
+          <label class="f">Cerrar sesión por inactividad<select id="cfgInact">
+            <option value="15">Después de 15 minutos</option><option value="30">Después de 30 minutos</option>
+            <option value="60">Después de 1 hora</option><option value="0">Nunca</option>
+          </select></label>
+          <p class="note" style="margin:0">Estas preferencias se guardan solo en este navegador.</p>
+        </section>
+        <section class="panel card">
+          <h2>Copia de seguridad</h2>
+          <p class="note" style="margin:0">Descarga en un archivo JSON todas las empresas, configuraciones, correcciones e historial guardados en la base de datos.</p>
+          <button class="btn ghost sm" id="cfgBackup" type="button" style="align-self:flex-start">Descargar copia (JSON)</button>
+        </section>
+      </div>
+    </section>
+  </div>
+</div>
+
+<!-- ================= FORMULARIO DE EMPRESA ================= -->
+<dialog id="dlgEmpresa" aria-labelledby="dlgEmpTitulo">
+  <form method="dialog" id="formEmpresa" novalidate>
+    <div class="modal-head"><h2 id="dlgEmpTitulo">Nueva empresa</h2><button type="button" class="x" data-close aria-label="Cerrar">×</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <label class="field"><span>RUC *</span><input type="text" id="feRuc" inputmode="numeric" maxlength="11" autocomplete="off"><span class="field-err" data-err="ruc" hidden></span></label>
+        <label class="field"><span>Estado</span><select id="feActiva"><option value="1">Activa</option><option value="0">Inactiva (no aparece al exportar)</option></select></label>
+        <label class="field full"><span>Razón social *</span><input type="text" id="feNombre" maxlength="150" autocomplete="off"><span class="field-err" data-err="nombre" hidden></span></label>
+        <div class="field full color-field" id="feColorWrap">
+          <span>Color de identificación</span>
+          <div class="color-row">
+            <input type="color" id="feColor" value="#0f766e" aria-label="Elegir color personalizado">
+            <div class="swatches" id="feSwatches" role="group" aria-label="Colores sugeridos"></div>
+          </div>
+          <div class="color-preview"><span class="emp-badge" id="fePreview">Vista previa</span><span class="mono note" id="feColorHex"></span></div>
+          <span class="field-err" data-err="color" hidden></span>
+        </div>
+        <label class="field full"><span>Alias (para reconocer el Excel; separa varios con «|»)</span><input type="text" id="feAlias" maxlength="150" placeholder="Ej.: 3MR|TALENTIA" autocomplete="off"></label>
+        <label class="field"><span>Horas lunes a viernes</span><input type="number" id="feLv" min="0" max="24" step="0.5" placeholder="Por definir"><span class="field-err" data-err="lv" hidden></span></label>
+        <label class="field"><span>Horas sábado (0 = no trabajan)</span><input type="number" id="feSab" min="0" max="24" step="0.5" placeholder="Por definir"><span class="field-err" data-err="sab" hidden></span></label>
+      </div>
+      <p class="note" style="margin:0">Deja ambas horas vacías si la jornada está por definir: se usará 8.5 / 5.5 hasta que la completes.</p>
+      <label class="check"><input type="checkbox" id="feBase31"><span>Sueldos calculados a 31 días<small>La planilla usa 31 días laborados todos los meses; horas y días no laborados siguen el calendario real.</small></span></label>
+      <label class="check"><input type="checkbox" id="feRegla"><span>Regla «sueldo bruto y vacaciones pagadas»<small>SUELDO BRUTO se declara como 0121 en lugar de SUELDO COMPUTABLE y VACACIONES PAGADAS como 0118.</small></span></label>
+      <div class="alertbox" id="feAviso" hidden></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" data-close>Cancelar</button>
+      <button type="submit" class="btn" id="feGuardar">Guardar empresa</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ================= FORMULARIO DE HISTORIAL ================= -->
+<dialog id="dlgHist" aria-labelledby="dlgHistTitulo">
+  <form method="dialog" id="formHist" novalidate>
+    <div class="modal-head"><h2 id="dlgHistTitulo">Registro manual</h2><button type="button" class="x" data-close aria-label="Cerrar">×</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <label class="field full"><span>Empresa *</span><select id="fhEmpresa"></select><span class="field-err" data-err="empresa" hidden></span></label>
+        <label class="field"><span>Mes *</span><select id="fhMes"></select></label>
+        <label class="field"><span>Año *</span><input type="number" id="fhAnio" min="2020" max="2099"><span class="field-err" data-err="anio" hidden></span></label>
+        <label class="field"><span>Trabajadores</span><input type="number" id="fhTrab" min="0" step="1"><span class="field-err" data-err="trab" hidden></span></label>
+        <label class="field"><span>Recibos 4ta</span><input type="number" id="fhRec" min="0" step="1"><span class="field-err" data-err="rec" hidden></span></label>
+        <label class="field"><span>Ingresos declarados (S/)</span><input type="number" id="fhIng" min="0" step="0.01"><span class="field-err" data-err="ing" hidden></span></label>
+        <label class="field"><span>Renta 5ta (S/)</span><input type="number" id="fhQuinta" min="0" step="0.01"><span class="field-err" data-err="quinta" hidden></span></label>
+        <label class="field"><span>Estado</span><select id="fhEstado"><option value="generado">Generado</option><option value="declarado">Declarado</option><option value="observado">Observado</option></select></label>
+        <label class="field"><span>Observaciones</span><input type="number" id="fhObs" min="0" step="1"></label>
+        <label class="field full"><span>Nota</span><textarea id="fhNota" maxlength="300" placeholder="Ej.: declarado el 12/11, constancia N.° …"></textarea></label>
+      </div>
+      <p class="note" style="margin:0" id="fhAyuda">Los registros se crean solos al descargar el ZIP. Usa el registro manual para periodos declarados fuera de la herramienta.</p>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" data-close>Cancelar</button>
+      <button type="submit" class="btn">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ================= FORMULARIO DE CÓDIGO PDT PLAME ================= -->
+<dialog id="dlgCodigo" aria-labelledby="dlgCodTitulo">
+  <form method="dialog" id="formCodigo" novalidate>
+    <div class="modal-head"><h2 id="dlgCodTitulo">Nuevo código PDT PLAME</h2><button type="button" class="x" data-close aria-label="Cerrar">×</button></div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <label class="field full"><span>Empresa *</span><select id="fcEmpresa"></select><span class="field-err" data-err="empresa" hidden></span></label>
+        <label class="field"><span>Tipo *</span><select id="fcTipo">
+          <option value="concepto">Concepto · tabla 22 (4 dígitos)</option>
+          <option value="snl">Día no laborado · tabla 21 (2 dígitos)</option>
+        </select></label>
+        <label class="field"><span>Código *</span><input type="text" id="fcCodigo" inputmode="numeric" maxlength="4" autocomplete="off"><span class="field-err" data-err="codigo" hidden></span></label>
+        <label class="field full"><span>Descripción o denominación *</span><input type="text" id="fcDescripcion" maxlength="150" autocomplete="off" placeholder="Ej.: Bonificación por cierre de pliego"><span class="field-err" data-err="descripcion" hidden></span></label>
+        <label class="field full" id="fcColumnaWrap"><span>Columna del Excel (opcional)</span><input type="text" id="fcColumna" maxlength="120" autocomplete="off" placeholder="Título exacto de la columna en la planilla, ej.: BONO CIERRE DE PLIEGO"><span class="field-err" data-err="columna" hidden></span></label>
+        <label class="field"><span>Estado</span><select id="fcActivo"><option value="1">Activo</option><option value="0">Inactivo (solo consulta)</option></select></label>
+      </div>
+      <p class="note" style="margin:0">Si indicas la columna, sus montos se declararán con este código solo en esta empresa. El código queda registrado únicamente para la empresa elegida.</p>
+      <div class="alertbox info" id="fcAyuda" hidden></div>
+      <div class="alertbox" id="fcBloqueo" hidden></div>
+      <div class="alertbox bad" id="fcAviso" hidden></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" data-close>Cancelar</button>
+      <button type="submit" class="btn" id="fcGuardar">Guardar código</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Sugerencias de códigos para los campos del exportador -->
+<datalist id="dl-conceptos"></datalist>
+<datalist id="dl-snl"></datalist>
+
+<!-- ================= EDITAR / RESPONDER SUGERENCIA ================= -->
+<dialog id="dlgSug" aria-labelledby="dlgSugTitulo">
+  <form method="dialog" id="formSug" novalidate>
+    <div class="modal-head"><h2 id="dlgSugTitulo">Editar sugerencia</h2><button type="button" class="x" data-close aria-label="Cerrar">×</button></div>
+    <div class="modal-body">
+      <div id="fsEditar" class="form-grid">
+        <label class="field"><span>Tipo</span><select id="fsTipo"><option value="sugerencia">Sugerencia</option><option value="comentario">Comentario</option><option value="error">Reporte de error</option><option value="consulta">Consulta</option></select></label>
+        <label class="field"><span>Prioridad</span><select id="fsPrioridad"><option value="baja">Baja</option><option value="media">Media</option><option value="alta">Alta</option></select></label>
+        <label class="field full"><span>Sección</span><select id="fsSeccion"><option>General</option><option>Panel principal</option><option>Exportar PLAME</option><option>Empresas</option><option>Códigos PLAME</option><option>Validación SUNAT</option><option>Comentarios y recomendaciones</option><option>Historial</option><option>Configuración</option></select></label>
+        <label class="field full"><span>Título *</span><input type="text" id="fsTitulo" maxlength="120"><span class="field-err" data-err="titulo" hidden></span></label>
+        <label class="field full"><span>Mensaje *</span><textarea id="fsMensaje" maxlength="2000" rows="5"></textarea><span class="field-err" data-err="mensaje" hidden></span></label>
+      </div>
+      <div id="fsResponder" style="display:flex;flex-direction:column;gap:12px">
+        <div class="alertbox info" id="fsOriginal"></div>
+        <label class="field"><span>Respuesta</span><textarea id="fsRespuesta" maxlength="2000" rows="5" placeholder="Escribe la respuesta para el equipo"></textarea><span class="field-err" data-err="respuesta" hidden></span></label>
+        <label class="field"><span>Estado</span><select id="fsEstado"><option value="nuevo">Nuevo</option><option value="en_revision">En revisión</option><option value="resuelto">Resuelto</option><option value="descartado">Descartado</option></select></label>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" data-close>Cancelar</button>
+      <button type="submit" class="btn">Guardar</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ================= CONFIRMACIÓN ================= -->
+<dialog id="dlgConfirm" aria-labelledby="dlgConfTitulo">
+  <form method="dialog">
+    <div class="modal-head"><h2 id="dlgConfTitulo">¿Confirmas?</h2></div>
+    <div class="modal-body"><p class="confirm-text" id="dlgConfTexto"></p></div>
+    <div class="modal-foot">
+      <button value="no" class="btn ghost">Cancelar</button>
+      <button value="si" class="btn danger" id="dlgConfSi">Eliminar</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+</body>
+</html>
